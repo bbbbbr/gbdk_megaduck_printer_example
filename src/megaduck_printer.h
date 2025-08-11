@@ -33,6 +33,8 @@
 
 
 
-bool duck_io_print_screen(void);
+// bool duck_io_print_screen(void);
+bool duck_io_print_screen(uint8_t);
+uint8_t duck_io_printer_query(void);
 
 #endif // _MEGADUCK_PRINTER_H

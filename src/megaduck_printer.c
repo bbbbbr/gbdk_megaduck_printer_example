@@ -5,6 +5,8 @@
 #include <duck/laptop_io.h>
 #include "megaduck_printer.h"
 
+                #include <stdio.h>
+
 static void prepare_tile_row(uint8_t row, uint8_t tile_bitplane_offset);
 static void convert_tile(uint8_t * p_out_buf, uint8_t * p_tile_buf);
 static void convert_tile_dithered(uint8_t * p_out_buf, uint8_t * p_tile_buf);
@@ -21,23 +23,70 @@ static bool duck_io_send_tile_row_2pass(uint8_t tile_bitplane_offset);
 uint8_t tile_row_buffer[DEVICE_SCREEN_WIDTH * BYTES_PER_PRINTER_TILE];
 
 
+// ======================================
+
+
+// Expects buffer to be pre-loaded with payload
+static bool print_send_command_and_buffer_delay_1msec_until_valid_reply(uint8_t command) {
+    
+    while (1) {
+        bool result = duck_io_send_cmd_and_buffer(command);
+        delay(1);        
+        if (result == true) return true;
+    }
+}
+
+
+
+uint8_t duck_io_printer_query(void) {
+
+    for (uint8_t c = 0u; c < 3u; c++) {
+        // Delay per system rom behavior
+        delay(50);
+        duck_io_send_byte(DUCK_IO_CMD_PRINT_INIT_MAYBE_EXT_IO);
+        duck_io_read_byte_with_msecs_timeout(200);
+        // Fail if the printer is not detected and/or not available
+        if (duck_io_rx_byte == 0) return duck_io_rx_byte;
+    }
+    return duck_io_rx_byte;
+}
+
+
+
+void test_single_send(void) {
+    uint8_t map_row = 0x04;
+
+    prepare_tile_row(map_row, BITPLANE_0);
+    duck_io_send_tile_row_2pass(BITPLANE_0);
+}
+
+// ======================================
+
 // Currently unknown:
 // - Single pass printer probably does not support variable image width
 // - Double pass printer might, since it has explicit Carriage Return and Line Feed commands, but it's not verified
 //
 // So for the time being require full screen image width
-bool duck_io_print_screen(void) {
+bool duck_io_print_screen(uint8_t printer_status) {
+
+    // TODO: pass in printer status
+    // uint8_t printer_status = duck_io_printer_query();
+    // printf("Printer Result %hx\n", printer_status);
+
+    uint8_t printer_type = printer_status &  DUCK_IO_PRINTER_TYPE_MASK;
 
     for (uint8_t map_row = 0; map_row < DEVICE_SCREEN_HEIGHT; map_row++) {
 
-        if (duck_io_printer_type() == DUCK_IO_PRINTER_TYPE_2_PASS) {
+        printf("R:%hx,\n", map_row);
+
+        if (printer_type == DUCK_IO_PRINTER_TYPE_2_PASS) {
             // First bitplane, fail out if there was a problem
             prepare_tile_row(map_row, BITPLANE_0);
             if (duck_io_send_tile_row_2pass(BITPLANE_0) == false) return false;
             // Second bitplane
             prepare_tile_row(map_row, BITPLANE_1);
             if (duck_io_send_tile_row_2pass(BITPLANE_1) == false) return false;
-        } else {
+        } else if (printer_type == DUCK_IO_PRINTER_TYPE_1_PASS) {
             // First bitplane, fail out if there was a problem
             prepare_tile_row(map_row, BITPLANE_BOTH);
             if (duck_io_send_tile_row_1pass() == false) return false;
@@ -52,16 +101,29 @@ static void prepare_tile_row(uint8_t row, uint8_t tile_bitplane_offset) {
     uint8_t tile_buffer[BYTES_PER_VRAM_TILE];
     uint8_t * p_row_buffer = tile_row_buffer;
 
-    // Add Scroll offset to closest tile
-    row        += (SCY_REG / TILE_HEIGHT);
-    uint8_t col = (SCX_REG / TILE_WIDTH);
+    bool    use_win_data = (((row * TILE_HEIGHT) >= WY_REG) && ( LCDC_REG & LCDCF_WINON));
+    uint8_t col = 0;
+
+    if (!use_win_data) {
+        // Add Scroll offset to closest tile (if rendering BG instead of Window)
+        row += (SCY_REG / TILE_HEIGHT);
+        col += (SCX_REG / TILE_WIDTH);
+    }
 
     // Loop through tile columns for the current tile row
     for (uint8_t tile = 0u; tile < DEVICE_SCREEN_WIDTH; tile++) {
         
+        uint8_t tile_id;
         // Get the Tile ID from the map then copy it's tile pattern data into a buffer
-        uint8_t tile_id = get_bkg_tile_xy((col + tile) & (DEVICE_SCREEN_BUFFER_HEIGHT - 1), 
-                                          row & (DEVICE_SCREEN_BUFFER_HEIGHT - 1));
+        if (use_win_data) {
+            // Read window data instead if it's enabled and visible
+            tile_id = get_win_tile_xy((col + tile) & (DEVICE_SCREEN_BUFFER_HEIGHT - 1), 
+                    (row - (WY_REG / TILE_HEIGHT)) & (DEVICE_SCREEN_BUFFER_HEIGHT - 1));
+        } else {
+            // Otherwise use the normal BG
+            tile_id = get_bkg_tile_xy((col + tile) & (DEVICE_SCREEN_BUFFER_HEIGHT - 1), 
+                                               row & (DEVICE_SCREEN_BUFFER_HEIGHT - 1));
+        }
         get_bkg_data(tile_id, 1u, tile_buffer);
 
         // Mirror, Rotate -90 degrees and reduce tile to 1bpp
@@ -190,7 +252,8 @@ static bool duck_io_send_tile_row_2pass(uint8_t tile_bitplane_offset) {
         for (uint8_t c = 0u; c < (duck_io_tx_buf_len - reserved_packet_end_bytes); c++)
             duck_io_tx_buf[c] = *p_row_buffer++;
 
-        if (!duck_io_send_cmd_and_buffer(DUCK_IO_CMD_PRINT_SEND_BYTES))
+        // if (!duck_io_send_cmd_and_buffer(DUCK_IO_CMD_PRINT_SEND_BYTES))
+        if (!print_send_command_and_buffer_delay_1msec_until_valid_reply(DUCK_IO_CMD_PRINT_SEND_BYTES))
             return false; // Fail out if there was a problem
     }
 
@@ -214,7 +277,8 @@ static bool duck_io_send_tile_row_1pass(void) {
         for (uint8_t c = 0u; c < (duck_io_tx_buf_len); c++)
             duck_io_tx_buf[c] = *p_row_buffer++;
 
-        if (!duck_io_send_cmd_and_buffer(DUCK_IO_CMD_PRINT_SEND_BYTES))
+        // if (!duck_io_send_cmd_and_buffer(DUCK_IO_CMD_PRINT_SEND_BYTES))
+        if (!print_send_command_and_buffer_delay_1msec_until_valid_reply(DUCK_IO_CMD_PRINT_SEND_BYTES))
             return false; // Fail out if there was a problem
     }
 
