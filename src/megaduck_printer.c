@@ -6,7 +6,8 @@
 #include "megaduck_printer.h"
 
 static void prepare_tile_row(uint8_t row, uint8_t tile_bitplane_offset);
-static void convert_tile (uint8_t * p_out_buf, uint8_t * p_tile_buf);
+static void convert_tile(uint8_t * p_out_buf, uint8_t * p_tile_buf);
+static void convert_tile_dithered(uint8_t * p_out_buf, uint8_t * p_tile_buf);
 static bool duck_io_send_tile_row_1pass(void);
 static bool duck_io_send_tile_row_2pass(uint8_t tile_bitplane_offset);
 
@@ -19,13 +20,6 @@ static bool duck_io_send_tile_row_2pass(uint8_t tile_bitplane_offset);
 // if the print data packets can be delivered at variable speed
 uint8_t tile_row_buffer[DEVICE_SCREEN_WIDTH * BYTES_PER_PRINTER_TILE];
 
-
-void test_single_send(void) {
-    uint8_t map_row = 0x04;
-
-    prepare_tile_row(map_row, BITPLANE_0);
-    duck_io_send_tile_row_2pass(BITPLANE_0);
-}
 
 // Currently unknown:
 // - Single pass printer probably does not support variable image width
@@ -45,7 +39,7 @@ bool duck_io_print_screen(void) {
             if (duck_io_send_tile_row_2pass(BITPLANE_1) == false) return false;
         } else {
             // First bitplane, fail out if there was a problem
-            prepare_tile_row(map_row, BITPLANE_0);
+            prepare_tile_row(map_row, BITPLANE_BOTH);
             if (duck_io_send_tile_row_1pass() == false) return false;
         }
     }
@@ -71,65 +65,33 @@ static void prepare_tile_row(uint8_t row, uint8_t tile_bitplane_offset) {
         get_bkg_data(tile_id, 1u, tile_buffer);
 
         // Mirror, Rotate -90 degrees and reduce tile to 1bpp
-        convert_tile(p_row_buffer, tile_buffer + tile_bitplane_offset);
+        if (tile_bitplane_offset == BITPLANE_BOTH)
+            convert_tile_dithered(p_row_buffer, tile_buffer);
+        else
+            convert_tile(p_row_buffer, tile_buffer + tile_bitplane_offset);
         p_row_buffer += BYTES_PER_PRINTER_TILE;
     }
 }
 
 
-    // for (uint8_t t=0u; t < 160; t++) {
-    //     // This (1bpp) input tile
-    //     //
-    //     //       bits
-    //     //      7 ___ 0
-    //     //     x........  = 0x80
-    //     //     x........  = 0x80
-    //     //     x........  = 0x80
-    //     // b 7 x........  = 0x80
-    //     // y . .........  = 0x00
-    //     // t . .........  = 0x00
-    //     // e 0 .........  = 0x00
-    //     //     .xxxxxxxx  = 0x7F
-    //     //
-    //     // Results in these bytes sent:
-    //     //   0   0xF0
-    //     //   1   0x01
-    //     //   2   0x01
-    //     //   3   0x01
-    //     //   4   0x01
-    //     //   5   0x01
-    //     //   6   0x01
-    //     //   7   0x01
-    //     //      
-    //     // Results in the following output:
-    //     //
-    //     //       bytes
-    //     //      0 ___ 7
-    //     //     x........
-    //     //     x........
-    //     //     x........
-    //     // b 7 x........
-    //     // i | .........
-    //     // t | .........
-    //     // s 0 .........
-    //     //     .xxxxxxxx
-    //     //
-    //     if ((t & 0x07u) == 0u) tile_row_buffer[t] = 0xF0u;
-    //     else tile_row_buffer[t] = 0x01u;
-    // }
-
-
-// For printing tile needs to be flipped horizontally and rotated -90 degrees
+// This (1bpp) input tile               Results in the following output:
+//                                     
+//       bits (X)        tile                 bytes (X)
+//      7 ___ 0          bytes               0 ___ 7
 //
-// Normal tile:    Printer tile: (Note changed axes)
-//    bits           bytes
-// b  --X--          --X--
-// y |  7 .. 0    b |   0 .. 7
-// t Y 0          i Y 7        
-// e | .          t | . 
-// s | 7          s | 0     
-//
-static void convert_tile (uint8_t * p_out_buf, uint8_t * p_tile_buf) {
+//     X.......  = [0] = 0x80                X.......
+// (Y) X.......  = [1] = 0x80                X.......
+//     X.......  = [2] = 0x80            (Y) X.......
+// b 0 X.......  = [3] = 0x80            b 0 X.......
+// y . ........  = [4] = 0x00            i | ........
+// t . ........  = [5] = 0x00            t | ........
+// e 7 ........  = [6] = 0x00            s 7 ........
+//     .XXXXXXX  = [7] = 0x7F                .XXXXXXX
+//                                          [0 ...  7] <- Tile Bytes
+//                                         /          
+//                                        F 0 0 0 0 0 0 0  aka: [0..7] = {0xF0, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}
+//                                        0 1 1 1 1 1 1 1
+static void convert_tile(uint8_t * p_out_buf, uint8_t * p_tile_buf) {
 
     // Clear printer tile
     for (uint8_t c = 0u; c < BYTES_PER_PRINTER_TILE; c++) {
@@ -155,6 +117,44 @@ static void convert_tile (uint8_t * p_out_buf, uint8_t * p_tile_buf) {
             if (tile_byte & tile_bit) p_out_buf[out_col] |= out_bit;
             tile_bit >>= 1;
         }
+        out_bit >>= 1;
+    }
+}
+
+
+static void convert_tile_dithered(uint8_t * p_out_buf, uint8_t * p_tile_buf) {
+
+    // Clear printer tile
+    for (uint8_t c = 0u; c < BYTES_PER_PRINTER_TILE; c++) {
+        p_out_buf[c] = 0u;
+    }
+
+    // Transform tile bytes into printable row buffer bytes
+    // Tile must get flipped horizontally and rotated -90 degrees
+    //
+    // For each tile row byte take the X axis bits representing pixels
+    // and transform them into column oriented bits spread across 8 bytes
+    //
+    uint8_t out_bit = 0x80u;  // X axis bit to set in the output for corresponding input
+    uint8_t dither  = 0xAAu;  // Dither pattern
+    for (uint8_t vram_tile_row = 0u; vram_tile_row < BYTES_PER_VRAM_TILE; vram_tile_row += 2u) {
+        uint8_t tile_byte0 = p_tile_buf[vram_tile_row];
+        uint8_t tile_byte1 = p_tile_buf[vram_tile_row+1];
+
+        // LSByte first, Scan X axis Left to right
+        uint8_t tile_bit = 0x80u;
+        for (uint8_t out_col = 0; out_col < TILE_HEIGHT; out_col++) {
+
+            if (tile_byte1 & tile_bit) {
+                p_out_buf[out_col] |= out_bit;; // Color 2 or 3 = always on
+            } else if ((tile_byte0 & dither) & tile_bit) {
+                p_out_buf[out_col] |= out_bit; // Color 1 enabled based on checkerboard dither pattern
+            }
+
+            tile_bit >>= 1;
+        }
+        // Flip dither pattern for next source tile row
+        dither = ~dither;
         out_bit >>= 1;
     }
 }

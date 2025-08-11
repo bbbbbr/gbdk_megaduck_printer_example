@@ -27,8 +27,9 @@
 #define PRINT_ROW_END_ACK_WAIT_TIMEOUT_200MSEC  200 // Presumably waiting for a carriage return confirmation ACK from the printer
 
 // Bitplane offsets into tile pattern data for 2 pass printing
-#define BITPLANE_0   0
-#define BITPLANE_1   1
+#define BITPLANE_0    0
+#define BITPLANE_1    1
+#define BITPLANE_BOTH 2
 
 
 
