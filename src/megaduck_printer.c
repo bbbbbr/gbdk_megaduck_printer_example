@@ -5,8 +5,7 @@
 #include <duck/laptop_io.h>
 #include "megaduck_printer.h"
 
-                #include <stdio.h>
-
+static bool print_blank_row(uint8_t printer_type);
 static void prepare_tile_row(uint8_t row, uint8_t tile_bitplane_offset);
 static void convert_tile(uint8_t * p_out_buf, uint8_t * p_tile_buf);
 static void convert_tile_dithered(uint8_t * p_out_buf, uint8_t * p_tile_buf);
@@ -23,76 +22,104 @@ static bool duck_io_send_tile_row_2pass(uint8_t tile_bitplane_offset);
 uint8_t tile_row_buffer[DEVICE_SCREEN_WIDTH * BYTES_PER_PRINTER_TILE];
 
 
-// ======================================
-
-
-// Expects buffer to be pre-loaded with payload
-static bool print_send_command_and_buffer_delay_1msec_until_valid_reply(uint8_t command) {
+// Expects duck_io_tx_buf to be pre-loaded with payload
+static bool print_send_command_and_buffer_delay_1msec_10x_retry(uint8_t command) {
     
-    while (1) {
+    uint8_t retry = 10u;
+    while (retry--) {
         bool result = duck_io_send_cmd_and_buffer(command);
-        delay(1);        
+        delay(1);
         if (result == true) return true;
     }
+    return false;
 }
 
-
-
-uint8_t duck_io_printer_query(void) {
-
-    for (uint8_t c = 0u; c < 3u; c++) {
-        // Delay per system rom behavior
-        delay(50);
-        duck_io_send_byte(DUCK_IO_CMD_PRINT_INIT_MAYBE_EXT_IO);
-        duck_io_read_byte_with_msecs_timeout(200);
-        // Fail if the printer is not detected and/or not available
-        if (duck_io_rx_byte == 0) return duck_io_rx_byte;
-    }
-    return duck_io_rx_byte;
-}
-
-
-
-void test_single_send(void) {
-    uint8_t map_row = 0x04;
-
-    prepare_tile_row(map_row, BITPLANE_0);
-    duck_io_send_tile_row_2pass(BITPLANE_0);
-}
-
-// ======================================
 
 // Currently unknown:
 // - Single pass printer probably does not support variable image width
 // - Double pass printer might, since it has explicit Carriage Return and Line Feed commands, but it's not verified
 //
 // So for the time being require full screen image width
-bool duck_io_print_screen(uint8_t printer_status) {
+bool duck_io_print_screen(void) {
 
-    // TODO: pass in printer status
-    // uint8_t printer_status = duck_io_printer_query();
-    // printf("Printer Result %hx\n", printer_status);
+    // Check for printer connectivity
+    uint8_t printer_type = duck_io_printer_query();
+    if (printer_type == DUCK_IO_PRINTER_FAIL) {
+        return false;
+    }
 
-    uint8_t printer_type = printer_status &  DUCK_IO_PRINTER_TYPE_MASK;
+    bool return_status = true;
+
+    // Turn off VBlank interrupt during printing
+    uint8_t int_enables_saved = IE_REG;
+    set_interrupts(IE_REG & ~VBL_IFLAG);
+
+    if (printer_type == DUCK_IO_PRINTER_MAYBE_BUSY)
+        printer_type = DUCK_IO_PRINTER_TYPE_1_PASS;
+
+
+// TODO: CONSTANTS FOR ALL THESE
+// TODO: TRY TO MAKE SUPER JUNIOR SAMEDUCK VAGUELY EMULATE LIMITATIONS
+
+// Starting with a blank row fixes the printing skipped tile glitch
+// somewhere in the first tile row
+print_blank_row(printer_type);
+delay(1000);
 
     for (uint8_t map_row = 0; map_row < DEVICE_SCREEN_HEIGHT; map_row++) {
-
-        printf("R:%hx,\n", map_row);
 
         if (printer_type == DUCK_IO_PRINTER_TYPE_2_PASS) {
             // First bitplane, fail out if there was a problem
             prepare_tile_row(map_row, BITPLANE_0);
-            if (duck_io_send_tile_row_2pass(BITPLANE_0) == false) return false;
-            // Second bitplane
-            prepare_tile_row(map_row, BITPLANE_1);
-            if (duck_io_send_tile_row_2pass(BITPLANE_1) == false) return false;
-        } else if (printer_type == DUCK_IO_PRINTER_TYPE_1_PASS) {
+            return_status = duck_io_send_tile_row_2pass(BITPLANE_0);
+
+            if (return_status != false) {
+                // Second bitplane
+                prepare_tile_row(map_row, BITPLANE_1);
+                return_status =  duck_io_send_tile_row_2pass(BITPLANE_1);
+            }
+        }
+        else if (printer_type == DUCK_IO_PRINTER_TYPE_1_PASS) {
             // First bitplane, fail out if there was a problem
             prepare_tile_row(map_row, BITPLANE_BOTH);
-            if (duck_io_send_tile_row_1pass() == false) return false;
+            return_status = duck_io_send_tile_row_1pass();
         }
+
+    // This delay seems to fix periodic skipped tile glitching
+    delay(1000);
+
+        // Quit printing if there was an error
+        if (return_status == false) break;
     }
-    return true;
+
+    print_blank_row(printer_type);
+
+    // Restore VBlank interrupt
+    set_interrupts(int_enables_saved);
+
+    return return_status;
+}
+
+
+static bool print_blank_row(uint8_t printer_type) {
+
+    // Fill print buffer with zero's
+    uint8_t * p_buf = tile_row_buffer;
+    for (uint8_t c = 0u; c < (DEVICE_SCREEN_WIDTH * BYTES_PER_PRINTER_TILE); c++) {
+        *p_buf++ = 0x00u;
+    }
+    
+    bool return_status = true;
+
+    if (printer_type == DUCK_IO_PRINTER_TYPE_2_PASS) {
+        return_status = duck_io_send_tile_row_2pass(BITPLANE_0);
+        if (return_status != false)
+            return_status =  duck_io_send_tile_row_2pass(BITPLANE_1);
+    }
+    else if (printer_type == DUCK_IO_PRINTER_TYPE_1_PASS)
+        return_status = duck_io_send_tile_row_1pass();
+
+    return return_status;
 }
 
 
@@ -252,8 +279,7 @@ static bool duck_io_send_tile_row_2pass(uint8_t tile_bitplane_offset) {
         for (uint8_t c = 0u; c < (duck_io_tx_buf_len - reserved_packet_end_bytes); c++)
             duck_io_tx_buf[c] = *p_row_buffer++;
 
-        // if (!duck_io_send_cmd_and_buffer(DUCK_IO_CMD_PRINT_SEND_BYTES))
-        if (!print_send_command_and_buffer_delay_1msec_until_valid_reply(DUCK_IO_CMD_PRINT_SEND_BYTES))
+        if (!print_send_command_and_buffer_delay_1msec_10x_retry(DUCK_IO_CMD_PRINT_SEND_BYTES))
             return false; // Fail out if there was a problem
     }
 
@@ -277,31 +303,41 @@ static bool duck_io_send_tile_row_1pass(void) {
         for (uint8_t c = 0u; c < (duck_io_tx_buf_len); c++)
             duck_io_tx_buf[c] = *p_row_buffer++;
 
-        // if (!duck_io_send_cmd_and_buffer(DUCK_IO_CMD_PRINT_SEND_BYTES))
-        if (!print_send_command_and_buffer_delay_1msec_until_valid_reply(DUCK_IO_CMD_PRINT_SEND_BYTES))
+        if (!print_send_command_and_buffer_delay_1msec_10x_retry(DUCK_IO_CMD_PRINT_SEND_BYTES))
             return false; // Fail out if there was a problem
     }
 
     uint8_t txbyte;
     // Now send remaining bulk non-packetized data (unclear why transmit methods are split)
     for (txbyte = 0u; txbyte < PRINTER_1_PASS_ROW_NUM_BULK_DATA_BYTES; txbyte++) {
-        duck_io_read_byte_with_msecs_timeout(PRINTER_1_PASS_BULK_ACK_TIMEOUT_100MSEC);
+        duck_io_read_byte_with_msecs_timeout(200u);
+//        delay(1);  // Delay per system rom timing
         duck_io_send_byte(*p_row_buffer++);
     }
 
     // Send last four bulk bytes after end of tile data, unclear what they are for
     for (txbyte = 0u; txbyte < PRINTER_1_PASS_ROW_NUM_BULK_UNKNOWN_BYTES; txbyte++) {
-        duck_io_read_byte_with_msecs_timeout(PRINTER_1_PASS_BULK_ACK_TIMEOUT_100MSEC);
+        duck_io_read_byte_with_msecs_timeout(200u);
+//        delay(1);  // Delay per system rom timing
         duck_io_send_byte(0x00);
     }
 
+    // The Duck Printer mechanical Carriage Return + Line Feed process takes about
+    // 500 msec for the print head to travel back to the start of the line
+    //
+    // After that there is about a 600 msec period before the printer head
+    // starts moving. The ASIC between the CPU and the printer may be
+    // buffering printer data during that time so it can stream it out
+    // with the right timing.
+
+// Try reducing all these back to standard...
     // Wait for last bulk data ACK (with 1msec delay for unknown reason)
-    delay(1);
-    duck_io_read_byte_with_msecs_timeout(PRINT_ROW_END_ACK_WAIT_TIMEOUT_200MSEC);
+    // delay(1);
+    duck_io_read_byte_with_msecs_timeout(250u);
     
     // End of row: wait for Carriage Return confirmation ACK from the printer
     // System ROM doesn't seem to care about the return value, so we won't either for now
-    duck_io_read_byte_with_msecs_timeout(PRINT_ROW_END_ACK_WAIT_TIMEOUT_200MSEC);
+    duck_io_read_byte_with_msecs_timeout(250u);
 
     return true; // Success
 }

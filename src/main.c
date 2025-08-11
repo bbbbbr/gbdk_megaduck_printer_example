@@ -10,7 +10,6 @@
 
 #include "megaduck_printer.h"
 
-bool    printer_init_result;
 uint8_t printer_type;
 
 const uint8_t bg_tile[] = {
@@ -22,6 +21,7 @@ const uint8_t bg_tile[] = {
     0x00, 0xFF,
     0xFF, 0xFF,
     0xFF, 0xFF, };
+
 
 uint8_t printer_query(void) {
 
@@ -49,27 +49,26 @@ static bool duck_laptop_and_printer_init(void) {
     // Otherwise laptop init succeeded
     printf("Laptop Detected!\n");
 
+    // Check to see if the printer was connected at startup, and if so what model
+    printer_type = duck_io_printer_last_status();
 
-// FIXME: Printer does not seem to detect on startup?
+    // If that failed, try a re-query of the printer    
+    if (printer_type == DUCK_IO_PRINTER_FAIL) {
 
-    // // // Check to see if the printer is connected, and if so what model
-    // // printer_init_result = duck_io_printer_detected();
+        printf("No printer at startup\n"
+               " re-querying...\n");
+        if (duck_io_printer_query() == DUCK_IO_PRINTER_FAIL) {
+            printf("Printer not found\n");
+            return false;
+        }
+    }
 
-    // // if (printer_init_result == false) {
-    // //     // If laptop hardware is not present then there isn't anything
-    // //     // for this program to do, so just idle in a loop
-    // //     printf("Printer not detected, trying again..\n");
-
-    // //     if (printer_query() == false)
-    // //         return false;
-    // // }
-
-    // // Otherwise printer init succeeded
-    // printf("Printer Detected!\n");
-    // if (duck_io_printer_type() == DUCK_IO_PRINTER_TYPE_1_PASS)
-    //     printf("- Single Pass model\n");
-    // else
-    //     printf("- Double Pass model\n");
+    // Otherwise printer init succeeded
+    printf("Printer Detected!\n");
+    if (printer_type == DUCK_IO_PRINTER_TYPE_1_PASS)
+        printf("- Single Pass model\n");
+    else
+        printf("- Double Pass model\n");
 
     return true;    
 }
@@ -102,7 +101,6 @@ bool duck_io_launch_cart(void) {
     return true;
 }
 
-extern void test_single_send(void);
 
 void main(void) {
 
@@ -120,11 +118,13 @@ void main(void) {
     fill_bkg_rect(0, DEVICE_SCREEN_HEIGHT - 4, DEVICE_SCREEN_WIDTH - 1, DEVICE_SCREEN_HEIGHT - 1, 255);
 
     // Stop here if no printer detected
-    if (duck_laptop_and_printer_init() == false) {
+    if (duck_laptop_and_printer_init() == false) {        
         // Optionally take action if no printer is detected
     }
 
-    printf("\n* Press START\n to print screen\n");
+    printf("\nPress:"
+           "* START to print\n"
+           "* SELECT requery\n");
 
 	while(1) {
 	    vsync();
@@ -135,20 +135,13 @@ void main(void) {
         switch (gamepad) {
             case J_START:
                 printf("Starting print...\n");
-                uint8_t printer_status = printer_query();
-                bool print_job_status = duck_io_print_screen(printer_status);
+                // uint8_t printer_type = printer_query();
+                bool print_job_status = duck_io_print_screen();
                 printf("Finished print, status: %hu\n", print_job_status);
                 // Wait until START is released before continuing
                 waitpadup();
                 break;
-            case J_UP:    SCY_REG--; break;
-            case J_DOWN:  SCY_REG++; break;
-            case J_LEFT:  SCX_REG--; break;
-            case J_RIGHT: SCX_REG++; break;
             case J_SELECT: printer_query(); waitpadup(); break;
-            case J_B: test_single_send(); waitpadup(); break;
-            case J_A: printf("tx: %hx\n", SCX_REG); duck_io_send_byte(SCX_REG); printf("done\n");
-                        waitpadup(); break;
         }
 	}
 }
