@@ -20,3 +20,8 @@ There are two types of Mega Duck printer, single pass and double pass.
 Printing example support for the double pass model is untested
 on hardware at present and so not included in the `main` branch.
 For it's example code see the `save_2_pass_printer` branch.
+
+## Code structure
+There are two separate files for the Mega Duck printer in this project.
+- `megaduck_printer.c` contains the core interface code for querying the printer, sending tile data to it and transforming (rotate and flip) tiles to the format expected by the print er.
+- `megaduck_printscreen.c` contains example code for sending a "print screen" of the console screen to the printer.

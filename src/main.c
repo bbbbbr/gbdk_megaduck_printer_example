@@ -9,6 +9,7 @@
 #include <duck/laptop_io.h>
 
 #include "megaduck_printer.h"
+#include "megaduck_printscreen.h"
 
 uint8_t printer_type;
 
@@ -74,36 +75,7 @@ static bool duck_laptop_and_printer_init(void) {
 }
 
 
-bool duck_io_launch_cart(void) {
-
-    printf("Launch Cart Cmd\n");
-    uint8_t retry_count = 5;
-    bool    command_status = false;
-
-    while (retry_count--) {
-        duck_io_send_byte(DUCK_IO_CMD_RUN_CART_IN_SLOT);
-        if (duck_io_read_byte_with_msecs_timeout(DUCK_IO_TIMEOUT_200_MSEC)) {
-            command_status = true;
-            break;
-        }
-    }
-
-    printf("Result: %hx\n", command_status);
-    // Fail if no reply to the command arrived
-    if (command_status == false) {
-        return false;
-    }
-
-    // Fail if no cart was found in the slot
-    if (duck_io_rx_byte == DUCK_IO_REPLY_NO_CART_IN_SLOT) {
-        return false;
-    }
-    return true;
-}
-
-
 void main(void) {
-
 
     uint8_t gamepad = 0;
     uint8_t gamepad_last = 0;
@@ -124,7 +96,8 @@ void main(void) {
 
     printf("\nPress:"
            "* START to print\n"
-           "* SELECT requery\n");
+           "* SELECT requery\n"
+           "* A print blank row\n");
 
 	while(1) {
 	    vsync();
@@ -136,11 +109,12 @@ void main(void) {
             case J_START:
                 printf("Starting print...\n");
                 // uint8_t printer_type = printer_query();
-                bool print_job_status = duck_io_print_screen();
+                bool print_job_status = duck_print_screen();
                 printf("Finished print, status: %hu\n", print_job_status);
                 // Wait until START is released before continuing
                 waitpadup();
                 break;
+            case J_A: duck_print_blank_row(); waitpadup(); break;
             case J_SELECT: printer_query(); waitpadup(); break;
         }
 	}
