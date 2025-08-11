@@ -103,6 +103,12 @@ bool duck_io_print_screen(void) {
         print_blank_row(printer_type);
     }
 
+    // One final delay to allow the printer to finish processing
+    // the last row sent. If this isn't done and a keyboard poll
+    // is sent immediately after, it seems the peripheral
+    // controller may trigger a cpu reset.
+    delay(PRINT_DELAY_BETWEEN_ROWS_1000MSEC);
+
     // Restore VBlank interrupt
     set_interrupts(int_enables_saved);
 
