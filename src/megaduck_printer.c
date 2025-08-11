@@ -40,6 +40,15 @@ static bool print_send_command_and_buffer_delay_1msec_10x_retry(uint8_t command)
 // - Double pass printer might, since it has explicit Carriage Return and Line Feed commands, but it's not verified
 //
 // So for the time being require full screen image width
+//
+// The Duck Printer mechanical Carriage Return + Line Feed process takes about
+// 500 msec for the print head to travel back to the start of the line.
+//
+// After that there is about a 600 msec period before the printer head
+// starts moving. The ASIC between the CPU and the printer may be
+// buffering printer data during that time so it can stream it out
+// with the right timing.
+//
 bool duck_io_print_screen(void) {
 
     // Check for printer connectivity
@@ -58,15 +67,14 @@ bool duck_io_print_screen(void) {
         printer_type = DUCK_IO_PRINTER_TYPE_1_PASS;
 
 
-// TODO: CONSTANTS FOR ALL THESE
-// TODO: TRY TO MAKE SUPER JUNIOR SAMEDUCK VAGUELY EMULATE LIMITATIONS
-
-// Starting with a blank row fixes the printing skipped tile glitch
-// somewhere in the first tile row
-print_blank_row(printer_type);
-delay(1000);
+    // Starting with a blank row (like system rom does) avoids a glitch where
+    // a tile is skipped somewhere in the very first row printed
+    print_blank_row(printer_type);
 
     for (uint8_t map_row = 0; map_row < DEVICE_SCREEN_HEIGHT; map_row++) {
+
+        // This delay seems to fix periodic skipped tile glitching
+        delay(PRINT_DELAY_BETWEEN_ROWS_1000MSEC);
 
         if (printer_type == DUCK_IO_PRINTER_TYPE_2_PASS) {
             // First bitplane, fail out if there was a problem
@@ -85,14 +93,15 @@ delay(1000);
             return_status = duck_io_send_tile_row_1pass();
         }
 
-    // This delay seems to fix periodic skipped tile glitching
-    delay(1000);
-
         // Quit printing if there was an error
         if (return_status == false) break;
     }
 
-    print_blank_row(printer_type);
+    // Print N blank rows to scroll the printed result up
+    for (uint8_t blank_row=0u; blank_row < PRINT_NUM_BLANK_ROWS_AT_END; blank_row++) {
+        delay(PRINT_DELAY_BETWEEN_ROWS_1000MSEC);
+        print_blank_row(printer_type);
+    }
 
     // Restore VBlank interrupt
     set_interrupts(int_enables_saved);
@@ -310,34 +319,22 @@ static bool duck_io_send_tile_row_1pass(void) {
     uint8_t txbyte;
     // Now send remaining bulk non-packetized data (unclear why transmit methods are split)
     for (txbyte = 0u; txbyte < PRINTER_1_PASS_ROW_NUM_BULK_DATA_BYTES; txbyte++) {
-        duck_io_read_byte_with_msecs_timeout(200u);
-//        delay(1);  // Delay per system rom timing
+        duck_io_read_byte_with_msecs_timeout(PRINTER_1_PASS_BULK_ACK_TIMEOUT_100MSEC);
         duck_io_send_byte(*p_row_buffer++);
     }
 
     // Send last four bulk bytes after end of tile data, unclear what they are for
     for (txbyte = 0u; txbyte < PRINTER_1_PASS_ROW_NUM_BULK_UNKNOWN_BYTES; txbyte++) {
-        duck_io_read_byte_with_msecs_timeout(200u);
-//        delay(1);  // Delay per system rom timing
+        duck_io_read_byte_with_msecs_timeout(PRINTER_1_PASS_BULK_ACK_TIMEOUT_100MSEC);
         duck_io_send_byte(0x00);
     }
 
-    // The Duck Printer mechanical Carriage Return + Line Feed process takes about
-    // 500 msec for the print head to travel back to the start of the line
-    //
-    // After that there is about a 600 msec period before the printer head
-    // starts moving. The ASIC between the CPU and the printer may be
-    // buffering printer data during that time so it can stream it out
-    // with the right timing.
-
-// Try reducing all these back to standard...
     // Wait for last bulk data ACK (with 1msec delay for unknown reason)
-    // delay(1);
-    duck_io_read_byte_with_msecs_timeout(250u);
+    duck_io_read_byte_with_msecs_timeout(PRINT_ROW_END_ACK_WAIT_TIMEOUT_200MSEC);
     
     // End of row: wait for Carriage Return confirmation ACK from the printer
     // System ROM doesn't seem to care about the return value, so we won't either for now
-    duck_io_read_byte_with_msecs_timeout(250u);
+    duck_io_read_byte_with_msecs_timeout(PRINT_ROW_END_ACK_WAIT_TIMEOUT_200MSEC);
 
     return true; // Success
 }
