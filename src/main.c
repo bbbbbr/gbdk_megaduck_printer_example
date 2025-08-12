@@ -52,6 +52,8 @@ static bool duck_laptop_and_printer_init(void) {
 
     // Check to see if the printer was connected at startup, and if so what model
     printer_type = duck_io_printer_last_status();
+    // Fix up printer status == 3 to be printer type 1, sort of a hack
+    if (printer_type == DUCK_IO_PRINTER_MAYBE_BUSY) printer_type = DUCK_IO_PRINTER_TYPE_1_PASS;
 
     // If that failed, try a re-query of the printer    
     if (printer_type == DUCK_IO_PRINTER_FAIL) {
@@ -94,7 +96,7 @@ void main(void) {
         // Optionally take action if no printer is detected
     }
 
-    printf("\nPress:"
+    printf("\nPress:\n"
            "* START to print\n"
            "* SELECT requery\n"
            "* A print blank row\n");
