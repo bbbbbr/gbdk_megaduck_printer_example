@@ -1,4 +1,9 @@
-# GBDK example for the Mega Duck Laptop
+# This example has been merged into GBDK-2020
+
+The updated version can be found at this URL:
+https://github.com/gbdk-2020/gbdk-2020/tree/develop/gbdk-lib/examples/megaduck
+
+## GBDK example for the Mega Duck Laptop
 How to interface with the printer made for the Mega Duck Laptop
 models ("Super QuiQue" and "Super Junior Computer").
 
